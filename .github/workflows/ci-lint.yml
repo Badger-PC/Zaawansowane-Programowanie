@@ -1,0 +1,68 @@
+name: Lint: pycodestyle + ruff
+
+on:
+  push:
+    paths:
+      - '**.py'
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - '**.py'
+      - '.github/workflows/**'
+
+jobs:
+  lint:
+    name: pycodestyle → ruff loop
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install linters
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff pycodestyle
+
+      - name: Run pycodestyle then ruff until clean
+        env:
+          MAX_ITER: 5
+        run: |
+          set -euo pipefail
+          iter=0
+          echo "Starting lint loop (max $MAX_ITER iterations)"
+          while [ "$iter" -lt "$MAX_ITER" ]; do
+            echo "Iteration $iter: running pycodestyle..."
+            if pycodestyle .; then
+              echo "pycodestyle clean"
+              exit 0
+            fi
+            echo "pycodestyle found issues; running ruff fixes and format"
+            # ruff check --fix will attempt to fix; ruff format handles formatting
+            ruff check --fix . || true
+            ruff format . || true
+
+            # if ruff made no workspace changes, stop looping to avoid infinite loop
+            if [ -z "$(git status --porcelain)" ]; then
+              echo "No changes introduced by ruff; stopping loop"
+              break
+            fi
+
+            # allow the loop to continue so pycodestyle can re-check modified files
+            iter=$((iter + 1))
+            echo "Changes detected; continuing to next iteration ($iter)"
+          done
+
+          echo "Final pycodestyle run:"
+          if pycodestyle .; then
+            echo "pycodestyle clean after ruff"
+            exit 0
+          else
+            echo "pycodestyle still reports issues after ruff; failing workflow"
+            pycodestyle . || true
+            exit 1
+          fi
