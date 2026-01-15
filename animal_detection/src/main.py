@@ -48,15 +48,10 @@ task_queue = asyncio.Queue()
 @app.on_event("startup")
 async def startup_event():
     global detector
-    print("Loading model...")
-    # This might take a moment to download the model on first run
     detector = AnimalDetector()
-    print("Model loaded.")
-    # Start background consumer
     asyncio.create_task(worker())
 
 async def worker():
-    print("Worker started...")
     while True:
         task = await task_queue.get()
         await process_task(task)
@@ -64,7 +59,6 @@ async def worker():
 
 async def process_task(data):
     task_id = data.get("task_id")
-    print(f"Processing task {task_id}")
     
     try:
         image_path = data.get("image_path")
@@ -105,7 +99,6 @@ async def process_task(data):
     # Save result
     with open(os.path.join(RESULTS_DIR, f"{task_id}.json"), 'w') as f:
         json.dump(result, f)
-    print(f"Task {task_id} done.")
 
 @app.get("/", response_class=HTMLResponse)
 def read_root():
@@ -121,7 +114,7 @@ def read_root():
             </style>
         </head>
         <body>
-            <h1>🐾 Animal Detection API</h1>
+            <h1>Animal Detection API</h1>
             <p>Welcome! This service can count animals in your images.</p>
             
             <h2>How to use:</h2>
