@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Query, Path
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 import uuid
 import os
@@ -39,6 +40,11 @@ INPUT_IMAGES_DIR = os.path.join(BASE_DIR, "input_images")
 # Ensure directories exist
 for d in [IMAGES_DIR, PROCESSED_DIR, RESULTS_DIR, INPUT_IMAGES_DIR]:
     os.makedirs(d, exist_ok=True)
+
+# Mount static files
+app.mount("/static/images", StaticFiles(directory=IMAGES_DIR), name="images")
+app.mount("/static/processed", StaticFiles(directory=PROCESSED_DIR), name="processed")
+app.mount("/static/input", StaticFiles(directory=INPUT_IMAGES_DIR), name="input")
 
 # Global variables
 detector = None
@@ -114,6 +120,7 @@ def read_root():
                 <li><strong>Swagger UI:</strong> Go to <a href="/docs">/docs</a> to try out the endpoints interactively.</li>
                 <li><strong>Local Files:</strong> Place images in the <code>input_images</code> folder and use <code>/detect-local</code>.</li>
                 <li><strong>Webcam:</strong> Use <code>/detect-webcam</code> to snap a photo now.</li>
+                <li><strong>Gallery:</strong> Go to <a href="/gallery">/gallery</a> to see a comparison of original and processed images.</li>
             </ol>
             
             <a href="/docs" class="btn">Open API Documentation</a>
@@ -294,6 +301,92 @@ def detect_webcam():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/gallery", response_class=HTMLResponse, summary="Gallery View")
+def gallery():
+    """
+    Shows a side-by-side comparison of original and processed images.
+    """
+    processed_files = sorted([f for f in os.listdir(PROCESSED_DIR) if f.lower().endswith(('.jpg', '.jpeg', '.png'))])
+    pairs = []
+    
+    for p_file in processed_files:
+        processed_url = f"/static/processed/{p_file}"
+        original_url = None
+        name = p_file
+        
+        # Logic to find original
+        if p_file.startswith("local_"):
+            # Format: local_filename.ext
+            orig_name = p_file[len("local_"):] 
+            if os.path.exists(os.path.join(INPUT_IMAGES_DIR, orig_name)):
+                original_url = f"/static/input/{orig_name}"
+                name = orig_name
+        elif "_processed" in p_file:
+             # Format: taskid_processed.jpg
+             # Try to reconstruct original filename. usually taskid.jpg
+             # We need to handle extension correctly? 
+             # In main.py: output_filename = f"{task_id}_processed.jpg"
+             # Original was f"{task_id}.jpg" (mostly)
+             
+             base_name = p_file.replace("_processed", "")
+             if os.path.exists(os.path.join(IMAGES_DIR, base_name)):
+                 original_url = f"/static/images/{base_name}"
+                 name = base_name
+        else:
+            # Direct match (e.g. webcam if overwriting or same name)
+             if os.path.exists(os.path.join(IMAGES_DIR, p_file)):
+                 original_url = f"/static/images/{p_file}"
+        
+        if original_url:
+            pairs.append({"original": original_url, "processed": processed_url, "name": name})
+    
+    # Generate HTML
+    rows = ""
+    for p in pairs:
+        rows += f"""
+        <div class="pair">
+            <h3>{p['name']}</h3>
+            <div class="images">
+                <div class="img-container">
+                    <span>Original</span>
+                    <img src="{p['original']}" loading="lazy">
+                </div>
+                <div class="img-container">
+                    <span>Processed</span>
+                    <img src="{p['processed']}" loading="lazy">
+                </div>
+            </div>
+        </div>
+        """
+        
+    return f"""
+    <html>
+        <head>
+            <title>Detection Gallery</title>
+            <style>
+                body {{ font-family: sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; background: #f0f2f5; }}
+                h1 {{ text-align: center; color: #333; }}
+                .pair {{ background: white; padding: 20px; margin-bottom: 30px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }}
+                .pair h3 {{ margin-top: 0; color: #444; border-bottom: 1px solid #eee; padding-bottom: 10px; }}
+                .images {{ display: flex; gap: 20px; flex-wrap: wrap; }}
+                .img-container {{ flex: 1; min-width: 300px; }}
+                .img-container span {{ display: block; font-weight: bold; margin-bottom: 5px; color: #666; }}
+                img {{ max-width: 100%; border-radius: 4px; border: 1px solid #ddd; }}
+                .empty {{ text-align: center; padding: 50px; color: #666; }}
+            </style>
+        </head>
+        <body>
+            <h1>Detection Gallery</h1>
+            <div class="gallery">
+                {rows if rows else '<div class="empty">No processed images found with matching originals.</div>'}
+            </div>
+            <div style="text-align: center; margin-top: 40px;">
+                <a href="/" style="display: inline-block; padding: 10px 20px; background: #007bff; color: white; text-decoration: none; border-radius: 5px;">Back to Home</a>
+            </div>
+        </body>
+    </html>
+    """
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
