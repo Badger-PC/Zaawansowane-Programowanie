@@ -7,7 +7,6 @@ import json
 import shutil
 import asyncio
 import cv2
-from typing import Optional
 
 # Import local modules
 from .detector import AnimalDetector
@@ -16,10 +15,10 @@ from .utils import download_image, draw_boxes
 app = FastAPI(
     title="Animal Detection API",
     description="""
-    ## Welcome to the Animal Detection API! 🐾
+    ## Welcome to the Animal Detection API!
 
-    This API allows you to detect animals (cats, dogs, birds, etc.) in images using AI.
-    
+    This API allows you to detect animals (cats, dogs, birds, bears) in images using AI.
+    Animal classes available: 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe'
     You can try the following:
     1. **Local Detection**: Detect animals in files you place in the `input_images` folder.
     2. **Webcam Detection**: Capture a photo from your webcam and check for animals.
@@ -63,14 +62,7 @@ async def process_task(data):
     try:
         image_path = data.get("image_path")
         if not image_path:
-             # Download if URL
-            image_url = data.get("image_url")
-            if image_url:
-                filename = f"{task_id}.jpg"
-                image_path = os.path.join(IMAGES_DIR, filename)
-                download_image(image_url, image_path)
-            else:
-                raise ValueError("No image source")
+             raise ValueError("No image path provided for task")
 
         # Detect
         loop = asyncio.get_event_loop()
@@ -128,6 +120,23 @@ def read_root():
         </body>
     </html>
     """
+from enum import Enum
+
+# Dynamic Enum for Swagger UI
+def get_image_files():
+    try:
+        files = sorted([f for f in os.listdir(INPUT_IMAGES_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp'))])
+    except Exception:
+        files = []
+    if not files:
+        return {"NO_FILES": "no_files_found"}
+    return {f: f for f in files}
+
+# Create the Enum dynamically
+# We need to recreate this if files change, but for now it's static on load/reload.
+image_files_dict = get_image_files()
+ImageEnum = Enum("ImageEnum", image_files_dict)
+
 @app.get("/get-local", summary="Get Local Files", description="Get a list of files in the `input_images` directory.")
 def get_local():
     files = os.listdir(INPUT_IMAGES_DIR)
@@ -135,27 +144,31 @@ def get_local():
 
 @app.get("/detect-local", summary="Detect from Local File", description="Process an image file located in the `input_images` directory.")
 def detect_local(
-    filename: str = Query(..., description="Name of the file in `input_images` folder", example="cat.jpg")
+    filename: ImageEnum = Query(..., description="Select a file from `input_images` folder")
 ):
     """
     **Instructions:**
-    1. Put a file (e.g. `cat.jpg`) inside `animal_detection/input_images/`.
-    2. Enter the filename here.
-    3. The system will detect animals and save the result in `storage/processed/`.
+    1. Select a file from the dropdown list.
+    2. The system will detect animals and save the result in `storage/processed/`.
     """
-    path = os.path.join(INPUT_IMAGES_DIR, filename)
+    # filename will be the Enum member. We need the value (the actual filename)
+    # FastAPI usually converts it, but let's be safe.
+    actual_filename = filename.value
+    
+    path = os.path.join(INPUT_IMAGES_DIR, actual_filename)
     if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail=f"File '{filename}' not found in {INPUT_IMAGES_DIR}. Please place the file there correctly.")
+        # This might happen if file was deleted after server start
+        raise HTTPException(status_code=404, detail=f"File '{actual_filename}' not found in {INPUT_IMAGES_DIR}.")
     
     try:
         count, detections = detector.detect(path)
         
         # Save processed version
-        output_path = os.path.join(PROCESSED_DIR, f"local_{filename}")
+        output_path = os.path.join(PROCESSED_DIR, f"local_{actual_filename}")
         draw_boxes(path, detections, output_path)
 
         return {
-            "file": filename,
+            "file": actual_filename,
             "animal_count": count,
             "message": f"Found {count} animals. Check output image.",
             "detections": detections,
@@ -164,8 +177,8 @@ def detect_local(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/detect-url-async", summary="Detect from URL (Async using Queue)")
-async def detect_url_async(
+@app.post("/detect-url", summary="Detect from URL ")
+async def detect_url(
     url: str = Query(..., description="URL of the image to analyze", example="https://upload.wikimedia.org/wikipedia/commons/4/4d/Cat_March_2010-1.jpg")
 ):
     """
@@ -175,14 +188,25 @@ async def detect_url_async(
     3. Use the returned `task_id` to check the status at `/task/{task_id}`.
     """
     task_id = str(uuid.uuid4())
+    filename = f"{task_id}.jpg"
+    image_path = os.path.join(IMAGES_DIR, filename)
+
+    try:
+        # Download image first (running in executor to avoid blocking main loop)
+        loop = asyncio.get_event_loop()
+        # Create a partial to pass arguments if needed, or just pass directly
+        await loop.run_in_executor(None, download_image, url, image_path)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to download image: {str(e)}")
+
     await task_queue.put({
         "task_id": task_id,
-        "image_url": url
+        "image_path": image_path
     })
     return {"task_id": task_id, "status": "queued", "message": "Task queued. Use GET /task/{task_id} to check results."}
 
-@app.post("/detect-upload-async", summary="Upload Image (Async using Queue)")
-async def detect_upload_async(file: UploadFile = File(..., description="Select an image file to upload")):
+@app.post("/detect-upload", summary="Upload Image")
+async def detect_upload(file: UploadFile = File(..., description="Select an image file to upload")):
     """
     **Instructions:**
     1. Click 'Try it out'.
@@ -202,13 +226,34 @@ async def detect_upload_async(file: UploadFile = File(..., description="Select a
     })
     return {"task_id": task_id, "status": "queued", "message": "Task queued. Use GET /task/{task_id} to check results."}
 
+# Dynamic Enum for Task IDs
+def get_task_ids():
+    try:
+        # List json files in RESULTS_DIR
+        files = sorted([f for f in os.listdir(RESULTS_DIR) if f.endswith('.json')])
+        # Remove extension
+        ids = [f.replace('.json', '') for f in files]
+    except Exception:
+        ids = []
+    
+    if not ids:
+        return {"NO_TASKS": "no_tasks_found"}
+    return {i: i for i in ids}
+
+# Create TaskEnum
+task_ids_dict = get_task_ids()
+TaskEnum = Enum("TaskEnum", task_ids_dict)
+
 @app.get("/task/{task_id}", summary="Check Task Status")
-def get_task_status(task_id: str = Path(..., description="The Task ID you received from an async endpoint")):
-    result_path = os.path.join(RESULTS_DIR, f"{task_id}.json")
+def get_task_status(task_id: TaskEnum = Path(..., description="The Task ID you received from an async endpoint")):
+    # Extract value from Enum
+    actual_task_id = task_id.value
+    
+    result_path = os.path.join(RESULTS_DIR, f"{actual_task_id}.json")
     if os.path.exists(result_path):
         with open(result_path, 'r') as f:
             return json.load(f)
-    return {"task_id": task_id, "status": "processing", "message": "Still working... try again in a second."}
+    return {"task_id": actual_task_id, "status": "processing", "message": "Still working... try again in a second."}
 
 @app.post("/detect-webcam", summary="Detect from Webcam")
 def detect_webcam():
