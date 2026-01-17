@@ -1,0 +1,8 @@
+[tool.ruff.lint]
+select = ["E", "F", "B", "I"]  # pycodestyle, pyflakes, bugbear, isort
+ignore = ["E501"]  # Allow long lines (or configure max-line-length)
+line-length = 88
+
+[tool.ruff.format]
+quote-style = "double"
+line-length = 88
